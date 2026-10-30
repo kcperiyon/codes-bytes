@@ -1,0 +1,202 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PersonStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+  REJECTED
+}
+
+enum OwnerType {
+  PARTNER
+  ASSOCIATE
+}
+
+enum SaleStatus {
+  PENDING
+  APPROVED
+  REFUNDED
+}
+
+enum CommissionRole {
+  DIRECT
+  OVERRIDE
+}
+
+enum CommissionStatus {
+  PENDING
+  APPROVED
+  PAID
+  CLAWED_BACK
+}
+
+enum PayoutStatus {
+  REQUESTED
+  PROCESSING
+  PAID
+  REJECTED
+}
+
+model AdminUser {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  slug        String   @unique // e.g. "flux9", "taxmasteragent"
+  name        String
+  baseUrl     String // e.g. https://flux9webinars.com
+  refParam    String   @default("cb_ref") // query param name the product reads the code from
+  apiSecret   String // shared secret the product uses to call /api/ingest/sale
+  currencies  String[] @default(["USD"])
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  links       ReferralLink[]
+  sales       Sale[]
+  clicks      Click[]
+}
+
+model Partner {
+  id                 String       @id @default(uuid())
+  code               String       @unique // short code used in links, e.g. "kelechi4821"
+  name               String
+  email              String       @unique
+  phone              String?
+  passwordHash       String?
+  status             PersonStatus @default(PENDING)
+  setPasswordToken   String?      @unique
+  setPasswordExpires DateTime?
+  createdAt          DateTime     @default(now())
+  approvedAt         DateTime?
+  suspendedAt        DateTime?
+  notes              String?
+
+  associates   Associate[]
+  links        ReferralLink[]
+  sales        Sale[]
+  commissions  Commission[]
+  payoutRequests PayoutRequest[] @relation("PartnerPayouts")
+}
+
+model Associate {
+  id                 String       @id @default(uuid())
+  code               String       @unique
+  name               String
+  email              String       @unique
+  phone              String?
+  passwordHash       String?
+  status             PersonStatus @default(PENDING)
+  setPasswordToken   String?      @unique
+  setPasswordExpires DateTime?
+  partnerId          String
+  partner            Partner      @relation(fields: [partnerId], references: [id])
+  createdAt          DateTime     @default(now())
+  approvedAt         DateTime?
+  suspendedAt        DateTime?
+  notes              String?
+
+  links        ReferralLink[]
+  sales        Sale[]
+  commissions  Commission[]
+  payoutRequests PayoutRequest[] @relation("AssociatePayouts")
+}
+
+// One row per (owner, product) so every partner/associate has a stable link per product.
+model ReferralLink {
+  id         String    @id @default(uuid())
+  code       String    @unique // the short code appended as ?cb_ref=<code> (same as owner.code, kept separate for future per-product codes)
+  ownerType  OwnerType
+  partnerId  String?
+  partner    Partner?  @relation(fields: [partnerId], references: [id])
+  associateId String?
+  associate  Associate? @relation(fields: [associateId], references: [id])
+  productId  String
+  product    Product   @relation(fields: [productId], references: [id])
+  createdAt  DateTime  @default(now())
+
+  @@unique([ownerType, partnerId, associateId, productId])
+}
+
+model Click {
+  id         String    @id @default(uuid())
+  code       String
+  productId  String
+  product    Product   @relation(fields: [productId], references: [id])
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+}
+
+model Sale {
+  id             String     @id @default(uuid())
+  productId      String
+  product        Product    @relation(fields: [productId], references: [id])
+  externalSaleId String // the sale/order id from the product's own DB, unique per product
+  refCode        String // the code that was used at checkout
+  ownerType      OwnerType
+  partnerId      String? // direct partner (if refCode belonged to a partner)
+  partner        Partner?   @relation(fields: [partnerId], references: [id])
+  associateId    String? // associate (if refCode belonged to an associate)
+  associate      Associate? @relation(fields: [associateId], references: [id])
+  overridePartnerId String? // the associate's recruiting partner, for the +5% override
+  amountMinor    Int // sale amount in minor units (cents/kobo), in the currency below
+  currency       String
+  customerEmail  String?
+  status         SaleStatus @default(PENDING)
+  createdAt      DateTime   @default(now())
+
+  commissions Commission[]
+
+  @@unique([productId, externalSaleId])
+}
+
+model Commission {
+  id            String           @id @default(uuid())
+  saleId        String
+  sale          Sale             @relation(fields: [saleId], references: [id])
+  beneficiaryType OwnerType
+  partnerId     String?
+  partner       Partner?         @relation(fields: [partnerId], references: [id])
+  associateId   String?
+  associate     Associate?       @relation(fields: [associateId], references: [id])
+  role          CommissionRole
+  rateBp        Int // basis points, e.g. 2000 = 20%
+  amountMinor   Int
+  currency      String
+  status        CommissionStatus @default(PENDING)
+  payoutRequestId String?
+  payoutRequest PayoutRequest?   @relation(fields: [payoutRequestId], references: [id])
+  createdAt     DateTime         @default(now())
+  approvedAt    DateTime?
+  clawedBackAt  DateTime?
+}
+
+model PayoutRequest {
+  id            String       @id @default(uuid())
+  beneficiaryType OwnerType
+  partnerId     String?
+  partner       Partner?     @relation("PartnerPayouts", fields: [partnerId], references: [id])
+  associateId   String?
+  associate     Associate?   @relation("AssociatePayouts", fields: [associateId], references: [id])
+  currency      String
+  amountMinor   Int
+  status        PayoutStatus @default(REQUESTED)
+  reference     String?
+  note          String?
+  requestedAt   DateTime     @default(now())
+  decidedAt     DateTime?
+
+  commissions   Commission[]
+}
